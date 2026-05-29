@@ -272,6 +272,15 @@ function GrantDetailContent({ grantId }: { grantId: string }) {
             )}
           </section>
 
+          <section className="border border-border-color bg-surface p-5 ring-1 ring-border-color">
+            <Link
+              href={`/grants/${grant.id}/history`}
+              className="font-mono text-xs text-accent-secondary hover:underline"
+            >
+              History →
+            </Link>
+          </section>
+
           <section className="hidden lg:block border border-border-color bg-surface p-5 ring-1 ring-border-color">
             <h3 className="font-mono text-[10px] uppercase tracking-[0.24em] text-text-muted mb-3">
               Reviewers
