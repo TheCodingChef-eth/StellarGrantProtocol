@@ -78,13 +78,18 @@ export function WalletConnect({
   }, []);
 
   // ── Fetch XLM balance when connected ────────────────────────────────────────
+  // Never call setState synchronously in an effect body (react-hooks/set-state-in-effect).
+  // setState is only called inside the async .then() callback. When address is
+  // absent the component renders State 1/2, so the stale balance value is never
+  // displayed — no synchronous reset needed.
   useEffect(() => {
-    if (!address) {
-      setXlmBalance(null);
-      return;
-    }
-    fetchXlmBalance(address).then(setXlmBalance);
+    if (!address) return;
+    let cancelled = false;
+    void fetchXlmBalance(address).then((bal) => {
+      if (!cancelled) setXlmBalance(bal);
+    });
     onConnect?.(address);
+    return () => { cancelled = true; };
   }, [address, onConnect]);
 
   // ── Close dropdown on outside click ─────────────────────────────────────────
