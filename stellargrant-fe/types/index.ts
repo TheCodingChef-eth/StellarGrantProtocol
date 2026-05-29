@@ -27,6 +27,7 @@ export interface TokenAmount {
 export interface Grant {
   id: string;
   owner: string;
+  recipient: string; // Grant recipient address
   title: string;
   description: string;
   budget: bigint;

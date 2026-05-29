@@ -64,3 +64,26 @@ export type {
   SubscribeOptions,
   Subscription,
 } from "./subscription";
+
+// Transaction history retrieval (Issue #256)
+export { getTransactionHistory, getGrantHistory } from "./history";
+export type {
+  GrantOperationType,
+  GrantHistoryRecord,
+  HistoryOptions,
+  HistoryResult,
+} from "./history";
+
+// Error mapping (Issue #250)
+export {
+  ErrorCode,
+  ERROR_MESSAGES,
+  StellarGrantsError,
+  SorobanContractError,
+  StellarGrantsNetworkError,
+  Errors,
+  parseSorobanError,
+  isContractError,
+  getErrorMessage,
+} from "../errors";
+export type { ErrorCodeValue } from "../errors";

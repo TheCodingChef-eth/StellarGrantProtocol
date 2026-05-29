@@ -2,12 +2,14 @@
  * GrantCard Component
  *
  * Compact card for grant listing pages. Shows title, status badge,
- * funding progress, deadline, and token.
+ * funding progress, deadline, and token. Includes a hover-lift animation
+ * via framer-motion that respects the user's reduced-motion preference.
  */
 
 "use client";
 
 import { useEffect, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { formatTokenAmount, getTokenMetadata, TokenMetadata } from "@/lib/tokens";
 import { GrantStatusBadge } from "./GrantStatusBadge";
 import { FundingProgress } from "./FundingProgress";
@@ -28,8 +30,24 @@ interface GrantCardProps {
   compact?: boolean;
 }
 
+/** Stagger variant for parent list containers */
+export const grantListVariants = {
+  hidden: {},
+  visible: {
+    transition: { staggerChildren: 0.06 },
+  },
+};
+
+/** Item variant consumed by each GrantCard in a staggered list */
+export const grantCardVariants = {
+  hidden: { opacity: 0, y: 16 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.3, ease: "easeOut" as const } },
+};
+
 export function GrantCard({ grant, onClick, showOwner = false, compact = false }: GrantCardProps) {
+  const prefersReduced = useReducedMotion();
   const [tokenMetadata, setTokenMetadata] = useState<TokenMetadata | null>(null);
+
   useEffect(() => {
     async function fetchMetadata() {
       if (grant.token) {
@@ -51,9 +69,12 @@ export function GrantCard({ grant, onClick, showOwner = false, compact = false }
     : new Date(grant.deadline);
 
   return (
-    <div
-      className="border rounded-lg p-4 cursor-pointer hover:shadow-md transition-shadow bg-white"
+    <motion.div
+      className="border rounded-lg p-4 cursor-pointer bg-white"
       onClick={onClick}
+      whileHover={prefersReduced ? {} : { y: -3, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      variants={grantCardVariants}
     >
       <div className="flex justify-between items-start mb-3">
         <h3 className="text-xl font-semibold flex-1">{grant.title}</h3>
@@ -83,7 +104,10 @@ export function GrantCard({ grant, onClick, showOwner = false, compact = false }
 
           {showOwner && grant.owner && (
             <div className="mt-2 text-xs text-gray-500">
-              Owner: <span className="font-mono">{grant.owner.slice(0, 8)}...{grant.owner.slice(-8)}</span>
+              Owner:{" "}
+              <span className="font-mono">
+                {grant.owner.slice(0, 8)}...{grant.owner.slice(-8)}
+              </span>
             </div>
           )}
         </>
@@ -94,6 +118,6 @@ export function GrantCard({ grant, onClick, showOwner = false, compact = false }
           <span className="font-medium">{fundedFormatted}</span> raised
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }

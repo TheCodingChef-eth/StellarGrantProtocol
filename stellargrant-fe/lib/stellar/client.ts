@@ -7,13 +7,11 @@
  */
 
 import { rpc, Horizon } from "@stellar/stellar-sdk";
+import { STELLAR_RPC_URL, NETWORK_PASSPHRASE, HORIZON_URL } from "@/lib/constants";
 
-const rpcUrl =
-  process.env.NEXT_PUBLIC_STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
-const networkPassphrase =
-  process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE || "Test SDF Network ; September 2015";
-const horizonUrl =
-  process.env.NEXT_PUBLIC_HORIZON_URL || "https://horizon-testnet.stellar.org";
+const rpcUrl = STELLAR_RPC_URL;
+const networkPassphrase = NETWORK_PASSPHRASE;
+const horizonUrl = HORIZON_URL;
 
 // Soroban RPC client singleton
 export const rpcClient = new rpc.Server(rpcUrl, {
