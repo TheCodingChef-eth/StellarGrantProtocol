@@ -1,8 +1,0 @@
-- [x] Phase 1: Build Reusable Keyboard Shortcut Hook
-- [x] Phase 2: Create Keyboard Shortcuts Overlay
-- [x] Phase 3: Register Global Shortcuts in `app/providers.tsx`
-- [x] Phase 4: Grants List Shortcuts in `app/grants/page.tsx`
-- [x] Phase 5: Grant Detail Shortcuts in `app/grants/[id]/GrantDetailClient.tsx`
-- [x] Phase 6: Milestone Detail Shortcuts in `components/milestones/VotePanel.tsx`
-- [x] Phase 7: Add Tests for the hook
-- [x] Phase 8: Final Validation
