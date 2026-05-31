@@ -178,7 +178,7 @@ export default function GrantsPage() {
         <EmptyState
           title="No matches found"
           description={`No grants match "${filterQuery}".`}
-          action={{ label: "Clear filter", action: () => setFilterQuery("") }}
+          action={{ label: "Clear filter", onClick: () => setFilterQuery("") }}
         />
       )}
 
