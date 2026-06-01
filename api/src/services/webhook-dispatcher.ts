@@ -238,7 +238,7 @@ export class WebhookDispatcher {
         continue;
       }
 
-      const payload: WebhookPayload = log.payload;
+      const payload: WebhookPayload = log.payload as WebhookPayload;
       const signature = WebhookDispatcher.signPayload(payload, log.subscription.secretKey);
 
       try {

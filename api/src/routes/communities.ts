@@ -45,7 +45,7 @@ export const buildCommunitiesRouter = (
         name: payload.name.trim(),
         description: payload.description?.trim() ?? null,
         logoUrl: payload.logoUrl ?? null,
-        adminAddresses: payload.adminAddresses?.map((address) => address.trim()) ?? [fallbackAdmin],
+        adminAddresses: payload.adminAddresses?.map((address: string) => address.trim()) ?? [fallbackAdmin],
         featured: payload.featured ?? false,
       });
 

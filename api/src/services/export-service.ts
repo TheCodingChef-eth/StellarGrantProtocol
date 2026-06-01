@@ -1,3 +1,4 @@
+// @ts-ignore
 import { Parser } from 'json2csv';
 
 export class ExportService {
@@ -72,7 +73,7 @@ export class ExportService {
     const pdfDoc = printer.createPdfKitDocument(docDefinition);
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      pdfDoc.on('data', chunk => chunks.push(chunk));
+      pdfDoc.on('data', (chunk: Buffer) => chunks.push(chunk));
       pdfDoc.on('end', () => resolve(Buffer.concat(chunks)));
       pdfDoc.on('error', reject);
       pdfDoc.end();

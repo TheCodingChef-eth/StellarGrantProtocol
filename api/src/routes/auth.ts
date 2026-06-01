@@ -15,7 +15,7 @@ export const buildAuthRouter = (userRepo: Repository<User>) => {
     
     // Generate nonce for PKCE/CSRF protection
     const state = crypto.randomBytes(16).toString("hex") + ":" + stellarAddress;
-    (req.session as any).oauthState = state;
+    (req as any).session.oauthState = state;
 
     passport.authenticate("github", { scope: ["user:email"], state })(req, res, next);
   });
@@ -25,7 +25,7 @@ export const buildAuthRouter = (userRepo: Repository<User>) => {
     passport.authenticate("github", { failureRedirect: "/login/error" }),
     async (req, res) => {
       const state = req.query.state as string;
-      const sessionState = (req.session as any).oauthState;
+      const sessionState = (req as any).session?.oauthState;
 
       if (!state || state !== sessionState) {
         return res.status(400).json({ error: "Invalid state parameter. Possible CSRF." });
@@ -59,7 +59,7 @@ export const buildAuthRouter = (userRepo: Repository<User>) => {
     }
     
     const state = crypto.randomBytes(16).toString("hex") + ":" + stellarAddress;
-    (req.session as any).oauthState = state;
+    (req as any).session.oauthState = state;
 
     // Twitter requires PKCE via express-session automatically if configured
     passport.authenticate("twitter", { state })(req, res, next);
@@ -70,7 +70,7 @@ export const buildAuthRouter = (userRepo: Repository<User>) => {
     passport.authenticate("twitter", { failureRedirect: "/login/error" }),
     async (req, res) => {
       const state = req.query.state as string;
-      const sessionState = (req.session as any).oauthState;
+      const sessionState = (req as any).session?.oauthState;
 
       if (!state || state !== sessionState) {
         return res.status(400).json({ error: "Invalid state parameter. Possible CSRF." });

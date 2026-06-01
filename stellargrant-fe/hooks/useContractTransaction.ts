@@ -15,6 +15,7 @@ import {
   Account,
   BASE_FEE,
   xdr,
+  Transaction,
 } from "@stellar/stellar-sdk";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
 import { rpcClient, networkPassphraseConfig } from "@/lib/stellar/client";
@@ -23,8 +24,9 @@ import { toast } from "@/lib/toast";
 import { useWallet } from "./useWallet";
 
 interface ExecuteOptions {
-  method: string;
-  args: xdr.ScVal[];
+  method?: string;
+  args?: xdr.ScVal[];
+  xdr?: string;
   onSuccess?: (txHash: string) => void;
   onError?: (error: Error) => void;
 }
@@ -61,7 +63,7 @@ export function useContractTransaction(): UseContractTransactionResult {
   };
 
   const execute = async (options: ExecuteOptions): Promise<string | null> => {
-    const { method, args, onSuccess, onError } = options;
+    const { method, args, xdr: xdrString, onSuccess, onError } = options;
 
     if (!address) {
       const err = new Error("Wallet not connected");
@@ -74,20 +76,29 @@ export function useContractTransaction(): UseContractTransactionResult {
     setIsSimulating(true);
 
     try {
-      // Step 1: Build the operation XDR
-      const contract = new Contract(CONTRACT_ID);
-      const account = await rpcClient.getAccount(address);
-      const sourceAccount = new Account(account.accountId(), account.sequenceNumber());
+      let transaction: Transaction;
 
-      const operation = contract.call(method, ...args);
+      if (xdrString) {
+        transaction = TransactionBuilder.fromXDR(xdrString, networkPassphraseConfig) as Transaction;
+      } else {
+        if (!method || !args) {
+          throw new Error("Method and args are required when xdr is not provided");
+        }
+        // Step 1: Build the operation XDR
+        const contract = new Contract(CONTRACT_ID);
+        const account = await rpcClient.getAccount(address);
+        const sourceAccount = new Account(account.accountId(), account.sequenceNumber());
 
-      let transaction = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: networkPassphraseConfig,
-      })
-        .addOperation(operation)
-        .setTimeout(180)
-        .build();
+        const operation = contract.call(method, ...args);
+
+        transaction = new TransactionBuilder(sourceAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: networkPassphraseConfig,
+        })
+          .addOperation(operation)
+          .setTimeout(180)
+          .build();
+      }
 
       // Step 2: Simulate
       const simulationResult = await rpcClient.simulateTransaction(transaction);

@@ -9,7 +9,7 @@ export function buildMyDonationsRouter(dataSource: DataSource) {
   const router = Router();
 
   // GET /?token=TOKEN_SYMBOL
-  router.get("/", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  router.get("/", authMiddleware, async (req: any, res: Response) => {
     const funderAddress = req.user?.stellarAddress;
 
     const token = req.query.token as string | undefined;

@@ -120,11 +120,8 @@ export const buildGrantRouter = (grantRepo: Repository<Grant>, syncService: Gran
 
       const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
       const communityId = req.query.communityId !== undefined ? Number(req.query.communityId) : undefined;
-      const grants = Number.isInteger(communityId)
-        ? await grantRepo.find({ where: { communityId, isDraft: false }, order: { id: "ASC" } })
-        : await grantRepo.find({ where: { isDraft: false }, order: { id: "ASC" } });
       const lang = req.header("Accept-Language");
-
+ 
       // ── Cursor-based path ──────────────────────────────────────────────────
       if (rawCursor !== undefined) {
         let cursorId: number;
@@ -137,30 +134,27 @@ export const buildGrantRouter = (grantRepo: Repository<Grant>, syncService: Gran
           res.status(400).json({ error: "Invalid cursor" });
           return;
         }
-
+ 
         const qb = grantRepo.createQueryBuilder("g")
+          .where("g.isDraft = :isDraft", { isDraft: false })
           .orderBy("g.updatedAt", "DESC")
           .addOrderBy("g.id", "DESC")
           .take(limit + 1); // fetch one extra to detect hasMore
-
+ 
         if (Number.isInteger(communityId)) {
-          qb.where("g.communityId = :communityId", { communityId });
-          qb.andWhere(
-            "(g.updatedAt < :ts OR (g.updatedAt = :ts AND g.id < :id))",
-            { ts: cursorTs, id: cursorId },
-          );
-        } else {
-          qb.where(
-            "(g.updatedAt < :ts OR (g.updatedAt = :ts AND g.id < :id))",
-            { ts: cursorTs, id: cursorId },
-          );
+          qb.andWhere("g.communityId = :communityId", { communityId });
         }
-
+        
+        qb.andWhere(
+          "(g.updatedAt < :ts OR (g.updatedAt = :ts AND g.id < :id))",
+          { ts: cursorTs, id: cursorId },
+        );
+ 
         const rows = await qb.getMany();
         const hasMore = rows.length > limit;
         const page = rows.slice(0, limit);
         const last = page[page.length - 1];
-
+ 
         return res.json({
           data: page.map((g) => localizeGrant(g, lang)),
           meta: {
@@ -170,21 +164,22 @@ export const buildGrantRouter = (grantRepo: Repository<Grant>, syncService: Gran
           },
         });
       }
-
+ 
       // ── Offset-based path (backwards-compatible) ───────────────────────────
       const page = Math.max(Number(rawPage) || 1, 1);
       const skip = (page - 1) * limit;
-
+ 
       const qb = grantRepo.createQueryBuilder("g")
+        .where("g.isDraft = :isDraft", { isDraft: false })
         .orderBy("g.updatedAt", "DESC")
         .addOrderBy("g.id", "DESC")
         .skip(skip)
         .take(limit);
-
+ 
       if (Number.isInteger(communityId)) {
-        qb.where("g.communityId = :communityId", { communityId });
+        qb.andWhere("g.communityId = :communityId", { communityId });
       }
-
+ 
       const [grants, total] = await qb.getManyAndCount();
 
       return res.json({

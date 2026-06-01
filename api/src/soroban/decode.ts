@@ -48,7 +48,7 @@ export function decodeAddress(val: xdr.ScVal): string {
   if (val.switch() !== xdr.ScValType.scvAddress()) {
     throw new Error(`Expected scvAddress, got ${val.switch().name}`);
   }
-  return val.address().toScAddress().toString();
+  return val.address().toString();
 }
 
 export function decodeBool(val: xdr.ScVal): boolean {

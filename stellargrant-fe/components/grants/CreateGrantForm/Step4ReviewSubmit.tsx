@@ -50,8 +50,7 @@ export function Step4ReviewSubmit() {
       });
 
       const hash = await execute({
-        method: txParams.method,
-        args: txParams.args,
+        xdr: txParams,
         onSuccess: (txHash) => {
           toast({
             title: "Grant Created Successfully!",

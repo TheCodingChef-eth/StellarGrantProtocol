@@ -18,4 +18,9 @@ export const env = {
   redisUrl: process.env.REDIS_URL ?? "",
   pinataJwt: process.env.PINATA_JWT ?? "",
   ipfsGateway: process.env.PINATA_GATEWAY ?? "https://gateway.pinata.cloud",
+  corsOrigins: process.env.CORS_ORIGIN ?? "*",
+  jwtSecret: process.env.JWT_SECRET ?? "",
+  rateLimitAlertWindowMinutes: Number(process.env.RATE_LIMIT_ALERT_WINDOW_MINUTES ?? 5),
+  rateLimitAlertThreshold: Number(process.env.RATE_LIMIT_ALERT_THRESHOLD ?? 100),
+  rateLimitAlertCooldownMinutes: Number(process.env.RATE_LIMIT_ALERT_COOLDOWN_MINUTES ?? 15),
 };

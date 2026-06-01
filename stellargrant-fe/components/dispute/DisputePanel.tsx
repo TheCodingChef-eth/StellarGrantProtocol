@@ -69,8 +69,7 @@ export function DisputePanel({
       });
 
       await execute({
-        method: txParams.method,
-        args: txParams.args,
+        xdr: txParams,
         onSuccess: (txHash) => {
           toast({
             title: approvePayout ? "Payout Approved" : "Funders Refunded",
