@@ -22,9 +22,30 @@ import {
   IpfsUploadConfig,
 } from "./types";
 import { meetsThreshold, PendingXdrStore } from "./utils/transactions";
+import { combineSignatures } from "./utils/transactions";
 import { uploadMetadataToIPFS, fetchMetadataFromIPFS } from "./ipfs";
+import { BatchBuilder, BatchCall, BatchOperationError, BatchSendOptions } from "./batch/BatchBuilder";
 
 export const CONTRACT_INTERFACE_VERSION = 1;
+
+type FeePriority = "low" | "medium" | "high";
+
+type WriteOptions = {
+  /** Fee priority strategy. Ignored when `fee` or `simulatedFee` are provided. */
+  feePriority?: FeePriority;
+  /** Explicit fee to use (stroops). Highest precedence. */
+  fee?: string;
+  /** Explicit pre-computed min resource fee to use (stroops). */
+  simulatedFee?: string;
+  /** Pre-computed footprint / transactionData. */
+  footprint?: any;
+  /** If true, return prepared unsigned transaction XDR instead of submitting. */
+  returnUnsignedXdr?: boolean;
+  /** If true, wait for transaction confirmation before returning (only on submit). */
+  waitForConfirmation?: boolean;
+  pollIntervalMs?: number;
+  timeoutMs?: number;
+};
 
 export class StellarGrantsSDK {
   public readonly pendingXdrStore = new PendingXdrStore();
@@ -34,6 +55,8 @@ export class StellarGrantsSDK {
   private readonly server: any;
   private readonly config: StellarGrantsSDKConfig;
   private eventPollHandle: ReturnType<typeof setTimeout> | null = null;
+  private eventHeartbeatHandle: ReturnType<typeof setTimeout> | null = null;
+  private eventWs: WebSocket | null = null;
 
   constructor(config: StellarGrantsSDKConfig) {
     if (!config.rpcUrl && !config.proxyUrl) {
@@ -83,6 +106,7 @@ export class StellarGrantsSDK {
     input: GrantCreateInput,
     options?: { 
       feePriority?: "low" | "medium" | "high"; 
+      fee?: string;
       simulatedFee?: string; 
       footprint?: any;
       ipfsConfig?: IpfsUploadConfig;
@@ -140,7 +164,7 @@ export class StellarGrantsSDK {
    */
   async milestoneSubmit(
     input: MilestoneSubmitInput,
-    options?: { feePriority?: "low" | "medium" | "high"; simulatedFee?: string },
+    options?: { feePriority?: "low" | "medium" | "high"; fee?: string; simulatedFee?: string },
   ): Promise<unknown> {
     return this.invokeWrite(
       "milestone_submit",
@@ -158,7 +182,7 @@ export class StellarGrantsSDK {
    */
   async milestoneVote(
     input: MilestoneVoteInput,
-    options?: { feePriority?: "low" | "medium" | "high"; simulatedFee?: string },
+    options?: { feePriority?: "low" | "medium" | "high"; fee?: string; simulatedFee?: string },
   ): Promise<unknown> {
     return this.invokeWrite(
       "milestone_vote",
@@ -393,17 +417,29 @@ export class StellarGrantsSDK {
       maxRetries?: number;
       baseBackoffMs?: number;
       maxBackoffMs?: number;
+      heartbeatTimeoutMs?: number;
+      /**
+       * Optional WebSocket URL for providers that support streaming.
+       * When omitted, the SDK uses HTTP polling only.
+       */
+      websocketUrl?: string;
+      /**
+       * Optional persistent cursor storage (e.g. localStorage).
+       * If provided, cursor is loaded on start and saved after each successful page.
+       */
+      cursorStore?: { get: () => string | null; set: (cursor: string) => void };
       onError?: (error: any) => void;
       onStatusChange?: (status: "connecting" | "active" | "reconnecting" | "closed") => void;
     }
   ): () => void {
     let active = true;
-    let cursor = options?.startCursor;
+    let cursor = options?.cursorStore?.get?.() ?? options?.startCursor;
     let retryCount = 0;
     const maxRetries = options?.maxRetries ?? 10;
     const pollIntervalMs = options?.pollIntervalMs ?? 5000;
     const baseBackoffMs = options?.baseBackoffMs ?? 1000;
     const maxBackoffMs = options?.maxBackoffMs ?? 30000;
+    const heartbeatTimeoutMs = options?.heartbeatTimeoutMs ?? 60000;
     const seenIds = new Set<string>();
 
     const normalizeEvent = (raw: any) => {
@@ -429,6 +465,135 @@ export class StellarGrantsSDK {
         name,
         pagingToken: raw.pagingToken ?? raw.paging_token,
       };
+    };
+
+    const cleanup = () => {
+      if (this.eventPollHandle) {
+        clearTimeout(this.eventPollHandle);
+        this.eventPollHandle = null;
+      }
+      if (this.eventHeartbeatHandle) {
+        clearTimeout(this.eventHeartbeatHandle);
+        this.eventHeartbeatHandle = null;
+      }
+      if (this.eventWs) {
+        try {
+          this.eventWs.onclose = null;
+          this.eventWs.onerror = null;
+          this.eventWs.onmessage = null;
+          this.eventWs.close();
+        } catch {
+          // ignore
+        }
+        this.eventWs = null;
+      }
+    };
+
+    const resetHeartbeat = () => {
+      if (this.eventHeartbeatHandle) clearTimeout(this.eventHeartbeatHandle);
+      this.eventHeartbeatHandle = setTimeout(() => {
+        if (!active) return;
+        // No successful poll within window → force reconnect.
+        cleanup();
+        scheduleReconnect();
+      }, heartbeatTimeoutMs);
+    };
+
+    const tryWebSocket = (): boolean => {
+      // Only attempt WS in environments that support it.
+      if (typeof WebSocket === "undefined") return false;
+
+      // Only use WebSocket when the caller explicitly provides a ws(s) URL.
+      // Most Soroban RPC providers expose HTTP JSON-RPC only.
+      const wsUrl = options?.websocketUrl?.replace(/\/+$/, "");
+      if (!wsUrl || !/^wss?:\/\//i.test(wsUrl)) return false;
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch {
+        return false;
+      }
+
+      this.eventWs = ws;
+
+      ws.onopen = () => {
+        options?.onStatusChange?.("connecting");
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "subscribeEvents",
+            params: {
+              filters: [{ contractIds: [this.config.contractId] }],
+              pagination: { cursor },
+            },
+          }),
+        );
+        resetHeartbeat();
+      };
+
+      ws.onmessage = (msg) => {
+        if (!active) return;
+        try {
+          const data = JSON.parse((msg as any).data as string) as any;
+          const rawEvents = data?.result?.events ?? [];
+          if (!Array.isArray(rawEvents) || rawEvents.length === 0) return;
+          retryCount = 0;
+          options?.onStatusChange?.("active");
+          resetHeartbeat();
+
+          const processed: any[] = [];
+          let latestCursor = cursor;
+          for (const rawEvent of rawEvents) {
+            const normalized = normalizeEvent(rawEvent);
+            if (options?.eventName && normalized.name !== options.eventName) continue;
+            const token = rawEvent.pagingToken ?? rawEvent.paging_token ?? normalized.pagingToken;
+            if (token && (!latestCursor || token > latestCursor)) latestCursor = token;
+            processed.push(normalized);
+          }
+          cursor = latestCursor;
+          if (cursor) options?.cursorStore?.set?.(cursor);
+          processed.forEach(callback);
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      ws.onerror = () => {
+        try { ws.close(); } catch {}
+      };
+
+      ws.onclose = () => {
+        this.eventWs = null;
+        if (!active) return;
+        scheduleReconnect();
+      };
+
+      return true;
+    };
+
+    const scheduleReconnect = () => {
+      if (!active) return;
+      retryCount++;
+      options?.onStatusChange?.("reconnecting");
+      if (retryCount > maxRetries) {
+        active = false;
+        options?.onStatusChange?.("closed");
+        return;
+      }
+      const delay = Math.random() * Math.min(maxBackoffMs, baseBackoffMs * 2 ** (retryCount - 1));
+      this.eventPollHandle = setTimeout(start, delay);
+    };
+
+    const start = () => {
+      if (!active) return;
+      cleanup();
+      options?.onStatusChange?.("connecting");
+      // Prefer WS if supported by provider; otherwise fall back to polling.
+      if (!tryWebSocket()) {
+        poll();
+      }
     };
 
     const poll = async () => {
@@ -469,6 +634,7 @@ export class StellarGrantsSDK {
 
         retryCount = 0;
         options?.onStatusChange?.("active");
+        resetHeartbeat();
 
         if (response?.events && Array.isArray(response.events)) {
           let latestCursor = cursor;
@@ -499,6 +665,7 @@ export class StellarGrantsSDK {
           }
 
           cursor = latestCursor;
+          if (cursor) options?.cursorStore?.set?.(cursor);
 
           // Prune seenIds to prevent memory leak
           if (seenIds.size > 5000) {
@@ -517,33 +684,17 @@ export class StellarGrantsSDK {
         }
       } catch (err: any) {
         if (!active) return;
-
-        retryCount++;
-        options?.onStatusChange?.("reconnecting");
-
-        if (retryCount > maxRetries) {
-          active = false;
-          options?.onStatusChange?.("closed");
-          if (options?.onError) {
-            options.onError(err);
-          }
-          return;
-        }
-
-        const delay = Math.random() * Math.min(maxBackoffMs, baseBackoffMs * 2 ** (retryCount - 1));
-        this.eventPollHandle = setTimeout(poll, delay);
+        if (options?.onError) options.onError(err);
+        scheduleReconnect();
       }
     };
 
-    poll();
+    start();
 
     return () => {
       active = false;
       options?.onStatusChange?.("closed");
-      if (this.eventPollHandle) {
-        clearTimeout(this.eventPollHandle);
-        this.eventPollHandle = null;
-      }
+      cleanup();
     };
   }
 
@@ -586,11 +737,15 @@ export class StellarGrantsSDK {
       }
     }
 
+    // Static tiers derived from simulation
+    const ceilDiv = (a: bigint, b: bigint) => (a + b - BigInt(1)) / b;
+    const mulCeil = (v: bigint, num: bigint, den: bigint) => ceilDiv(v * num, den);
+
     return {
       base: base.toString(),
       source: "simulation-fallback",
       low: base.toString(),
-      medium: ((base * BigInt(15) + BigInt(9)) / BigInt(10)).toString(),
+      medium: mulCeil(base, BigInt(15), BigInt(10)).toString(),
       high: (base * BigInt(2)).toString(),
       modifiers: { low: 1, medium: 1.5, high: 2 },
     };
@@ -686,33 +841,38 @@ export class StellarGrantsSDK {
   private async invokeWrite(
     method: string,
     args: xdr.ScVal[],
-    options?: {
-      feePriority?: "low" | "medium" | "high";
-      simulatedFee?: string;
-      /** Pre-computed footprint from a prior {@link simulateFootprint} call. See issue #462. */
-      footprint?: any;
-      /** If true, wait for transaction confirmation before returning. */
-      waitForConfirmation?: boolean;
-      pollIntervalMs?: number;
-      timeoutMs?: number;
-    },
+    options?: WriteOptions,
   ): Promise<unknown> {
     try {
       const tx = await this.buildTx(method, args, options);
       const simulation = await this.server.simulateTransaction(tx);
       this.ensureSimulationSuccess(simulation);
 
-      // #458 — apply the simulation's minResourceFee when the caller has not
-      // supplied an explicit fee so every write goes out with an accurate fee.
-      const estimatedFee = simulation?.minResourceFee
-        ? this.applyFeePriority(BigInt(simulation.minResourceFee), options?.feePriority)
-        : undefined;
+      const minResourceFee = BigInt(simulation?.minResourceFee ?? "0");
 
-      const txForSending = estimatedFee
-        ? await this.buildTx(method, args, { ...options, simulatedFee: estimatedFee.toString() })
+      // Fee selection precedence: explicit fee > simulatedFee > priority(minResourceFee) > defaultFee
+      const desiredFee =
+        options?.fee ??
+        options?.simulatedFee ??
+        (simulation?.minResourceFee
+          ? this.applyFeePriority(minResourceFee, options?.feePriority).toString()
+          : undefined);
+
+      const txForSending = desiredFee
+        ? await this.buildTx(method, args, { ...options, simulatedFee: desiredFee })
         : tx;
 
       const prepared = await this.server.prepareTransaction(txForSending);
+
+      if (options?.returnUnsignedXdr) {
+        const id =
+          (globalThis as any).crypto?.randomUUID?.() ??
+          `pending_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const xdr = prepared.toXDR();
+        this.pendingXdrStore.save(id, xdr);
+        return { id, xdr };
+      }
+
       if (!this.config.signer) {
         throw new Error("A signer is required for write operations.");
       }
@@ -771,10 +931,11 @@ export class StellarGrantsSDK {
     priority?: "low" | "medium" | "high",
   ): bigint {
     switch (priority) {
-      case "low":    return (base * BigInt(16)) / BigInt(10);
-      case "high":   return (base * BigInt(35)) / BigInt(10);
+      // Keep these conservative defaults aligned with `estimateFees()` fallback tiers.
+      case "low":    return base;
+      case "high":   return base * BigInt(2);
       case "medium":
-      default:       return (base * BigInt(25)) / BigInt(10);
+      default:       return (base * BigInt(15) + BigInt(9)) / BigInt(10);
     }
   }
 
@@ -783,6 +944,7 @@ export class StellarGrantsSDK {
     args: xdr.ScVal[],
     options?: {
       feePriority?: "low" | "medium" | "high";
+      fee?: string;
       simulatedFee?: string;
       footprint?: any;
     },
@@ -794,7 +956,7 @@ export class StellarGrantsSDK {
 
     const source = await signer.getPublicKey();
     const account = await this.server.getAccount(source);
-    const fee = options?.simulatedFee ?? this.config.defaultFee ?? "100";
+    const fee = options?.fee ?? options?.simulatedFee ?? this.config.defaultFee ?? "100";
 
     let builder = new TransactionBuilder(account, {
       fee,
@@ -804,6 +966,140 @@ export class StellarGrantsSDK {
       .setTimeout(60);
 
     // #462 — attach pre-computed footprint when provided
+    if (options?.footprint) {
+      builder = (builder as any).setSorobanData(options.footprint) ?? builder;
+    }
+
+    return builder.build();
+  }
+
+  /**
+   * Batch multiple contract calls into a single Stellar transaction.
+   */
+  batch(): BatchBuilder {
+    return new BatchBuilder(this);
+  }
+
+  /**
+   * Multi-sig helper: merge signatures from multiple signed XDRs.
+   */
+  combineSignatures(baseXdr: string, signaturesXdrs: string[]): string {
+    return combineSignatures(baseXdr, signaturesXdrs, this.config.networkPassphrase);
+  }
+
+  // -------------------------------------------------------------------------
+  // Batch internals (intentionally not part of the public API surface)
+  // -------------------------------------------------------------------------
+
+  async __simulateBatch(calls: BatchCall[], options?: Omit<BatchSendOptions, "waitForConfirmation" | "returnUnsignedXdr">): Promise<any> {
+    try {
+      const tx = await this.__buildBatchTx(calls, options);
+      const simulation = await this.server.simulateTransaction(tx);
+      this.ensureSimulationSuccess(simulation);
+
+      // Best-effort: if the RPC returns per-op results, surface the failing index.
+      const results = (simulation as any)?.results;
+      if (Array.isArray(results)) {
+        const idx = results.findIndex((r: any) => r?.error);
+        if (idx >= 0) {
+          throw new BatchOperationError(
+            `Batch simulation failed at operation #${idx}`,
+            {
+              operationIndex: idx,
+              method: calls[idx]?.method,
+              label: calls[idx]?.label,
+              details: results[idx],
+            },
+          );
+        }
+      }
+
+      return simulation;
+    } catch (error) {
+      throw parseSorobanError(error);
+    }
+  }
+
+  async __sendBatch(calls: BatchCall[], options?: BatchSendOptions): Promise<any> {
+    try {
+      const tx = await this.__buildBatchTx(calls, options);
+      const simulation = await this.server.simulateTransaction(tx);
+      this.ensureSimulationSuccess(simulation);
+
+      const minResourceFee = BigInt(simulation?.minResourceFee ?? "0");
+      const desiredFee =
+        options?.fee ??
+        options?.simulatedFee ??
+        (simulation?.minResourceFee
+          ? this.applyFeePriority(minResourceFee, options?.feePriority).toString()
+          : undefined);
+
+      const txForSending = desiredFee
+        ? await this.__buildBatchTx(calls, { ...options, simulatedFee: desiredFee })
+        : tx;
+
+      const prepared = await this.server.prepareTransaction(txForSending);
+
+      if (options?.returnUnsignedXdr) {
+        const id =
+          (globalThis as any).crypto?.randomUUID?.() ??
+          `pending_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        const xdr = prepared.toXDR();
+        this.pendingXdrStore.save(id, xdr);
+        return { id, xdr };
+      }
+
+      if (!this.config.signer) {
+        throw new Error("A signer is required for write operations.");
+      }
+
+      const signedXdr = await this.config.signer.signTransaction(
+        prepared.toXDR(),
+        this.config.networkPassphrase,
+      );
+      const signedTx = TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase);
+      const sent = await this.server.sendTransaction(signedTx);
+      if (sent.status === "ERROR") {
+        throw new StellarGrantsError(`Send failed: ${sent.errorResult ?? "unknown error"}`);
+      }
+
+      if (options?.waitForConfirmation && sent.hash) {
+        return this.waitForTransaction(sent.hash, {
+          pollIntervalMs: options.pollIntervalMs,
+          timeoutMs: options.timeoutMs,
+        });
+      }
+
+      return sent;
+    } catch (error) {
+      throw parseSorobanError(error);
+    }
+  }
+
+  private async __buildBatchTx(
+    calls: BatchCall[],
+    options?: { feePriority?: FeePriority; fee?: string; simulatedFee?: string; footprint?: any },
+  ): Promise<any> {
+    const signer = this.config.signer;
+    if (!signer) {
+      throw new Error("A signer is required to build a transaction.");
+    }
+
+    const source = await signer.getPublicKey();
+    const account = await this.server.getAccount(source);
+    const fee = options?.fee ?? options?.simulatedFee ?? this.config.defaultFee ?? "100";
+
+    let builder = new TransactionBuilder(account, {
+      fee,
+      networkPassphrase: this.config.networkPassphrase,
+    });
+
+    for (const c of calls) {
+      builder = builder.addOperation(this.contract.call(c.method, ...c.args));
+    }
+
+    builder = builder.setTimeout(60);
+
     if (options?.footprint) {
       builder = (builder as any).setSorobanData(options.footprint) ?? builder;
     }

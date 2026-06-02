@@ -69,6 +69,18 @@ export type GrantCreateInput = {
   milestoneCount: number;
 };
 
+/**
+ * Minimal shape used by Vue composables.
+ * The contract return type is currently `unknown` at the SDK boundary, so
+ * downstream apps can narrow this to their own domain model.
+ */
+export type GrantData = Record<string, unknown> & {
+  id?: number;
+  title?: string;
+  description?: string;
+  status?: string;
+};
+
 export type GrantFundInput = {
   grantId: number;
   token: string;

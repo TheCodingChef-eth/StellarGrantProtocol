@@ -21,10 +21,16 @@ export type {
 export { uploadMetadataToIPFS, fetchMetadataFromIPFS } from "./ipfs";
 export type { IpfsUploadConfig, IpfsUploadResult } from "./types";
 
+// Batch operations — Issue #491
+export { BatchBuilder, BatchOperationError } from "./batch/BatchBuilder";
+
 // Optimistic UI utilities — Task #487
 export { TransactionTracker } from "./utils/TransactionTracker";
 export { OptimisticStateManager } from "./utils/OptimisticStateManager";
 export type { TransactionStage, TransactionTrackerEvents, OptimisticUpdate } from "./utils/TransactionTracker";
+
+// Multi-sig utilities — Issue #484
+export { combineSignatures } from "./utils/transactions";
 
 // Wallet adapters — import directly from @stellargrants/client-sdk
 export { FreighterAdapter } from "./wallets/FreighterAdapter";
