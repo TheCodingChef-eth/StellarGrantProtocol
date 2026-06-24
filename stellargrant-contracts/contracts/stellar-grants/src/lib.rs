@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+mod batch;
 mod constants;
 mod emergency;
 mod errors;
@@ -15,7 +16,7 @@ pub use errors::ContractError;
 pub use events::Events;
 pub use storage::Storage;
 pub use types::{
-    ContractVersion, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund, GrantStatus,
+§    ContractVersion, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund, GrantStatus,
     MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, PauseRecord, RegistryEntry,
     RegistryEntryType,
 };

@@ -1,9 +1,10 @@
 #[cfg(test)]
 mod tests {
     use crate::constants;
-    use crate::errors::ContractError;
     use crate::storage::Storage;
-    use crate::types::{Grant, GrantFund, GrantStatus, Milestone, MilestoneState};
+    use crate::types::{
+        BatchMilestoneVote, ContractError, Grant, GrantFund, GrantStatus, Milestone, MilestoneState,
+    };
     use crate::StellarGrantsContract;
     use crate::StellarGrantsContractClient;
     use soroban_sdk::{testutils::Address as _, token, Address, Env, Map, String, Vec};
@@ -266,7 +267,26 @@ mod tests {
     #[test]
     fn test_unpause_allows_grant_create() {
         let env = Env::default();
+        let (client, admin, _) = setup_test(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+        let funder = Address::generate(&env);
+        let items = Vec::new(&env);
+
         env.mock_all_auths();
+        let result = client.try_batch_fund_grants(&funder, &token_id, &items);
+        assert_eq!(result, Err(Ok(ContractError::BatchEmpty.into())));
+    }
+
+    #[test]
+    fn test_batch_fund_grants_partial_failure() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (client, admin, contract_id) = setup_test(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+        let token_admin = token::StellarAssetClient::new(&env, &token_id);
 
         let (client, admin, _) = setup_test(&env);
         setup_admin(&client, &admin);
