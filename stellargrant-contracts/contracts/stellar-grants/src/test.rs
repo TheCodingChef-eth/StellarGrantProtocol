@@ -366,37 +366,32 @@ mod tests {
     }
 
     #[test]
-    fn test_grant_create_appends_audit_entry() {
+    fn test_fund_batch_empty_returns_error() {
         let env = Env::default();
-        let (client, admin, _) = setup_test(&env);
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token_id = token_contract.address();
+        let (client, _, _) = setup_test(&env);
         let funder = Address::generate(&env);
-        let items = Vec::new(&env);
+        let items: Vec<(u64, i128)> = Vec::new(&env);
 
         env.mock_all_auths();
-        let result = client.try_batch_fund_grants(&funder, &token_id, &items);
+        let result = client.try_fund_batch(&funder, &items);
         assert_eq!(result, Err(Ok(ContractError::BatchEmpty.into())));
     }
 
     #[test]
-    fn test_batch_fund_grants_partial_failure() {
+    fn test_grant_create_appends_audit_entry() {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (client, admin, contract_id) = setup_test(&env);
+        let (client, admin, _) = setup_test(&env);
         let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
         let token_id = token_contract.address();
-        let token_admin = token::StellarAssetClient::new(&env, &token_id);
-
-        let (client, admin, _) = setup_test(&env);
-        setup_admin(&client, &admin);
+        let owner = Address::generate(&env);
 
         let grant_id = client.grant_create(
             &owner,
             &String::from_str(&env, "Title"),
             &String::from_str(&env, "Description"),
-            &token,
+            &token_id,
             &1000,
             &100,
             &10,

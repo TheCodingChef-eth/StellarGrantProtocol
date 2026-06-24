@@ -47,7 +47,7 @@ pub fn deduct_and_transfer(
 
     gross
         .checked_sub(fee)
-        .ok_or(ContractError::InsufficientBalance)
+        .ok_or(ContractError::InvalidInput)
 }
 
 pub fn total_fees_collected(env: &Env, token: &Address) -> i128 {
@@ -55,10 +55,8 @@ pub fn total_fees_collected(env: &Env, token: &Address) -> i128 {
 }
 
 pub fn set_treasury(env: &Env, admin: &Address, treasury: &Address) -> Result<(), ContractError> {
-    if !crate::access::has_role(env, admin, crate::types::Role::Admin)
-        && Storage::get_global_admin(env) != Some(admin.clone())
-    {
-        return Err(ContractError::NotContractAdmin);
+    if Storage::get_global_admin(env) != Some(admin.clone()) {
+        return Err(ContractError::Unauthorized);
     }
     Storage::set_treasury(env, treasury);
     Ok(())

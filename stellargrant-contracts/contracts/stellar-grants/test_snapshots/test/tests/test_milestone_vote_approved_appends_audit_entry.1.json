@@ -425,6 +425,36 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "MilestoneReputationApplied"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u32": 0
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1000000
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "ReviewerReputation"
                   },
                   {

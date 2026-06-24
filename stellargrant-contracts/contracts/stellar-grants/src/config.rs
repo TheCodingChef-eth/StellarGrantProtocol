@@ -44,10 +44,8 @@ pub fn set_config(
     admin: &Address,
     new_config: ProtocolConfig,
 ) -> Result<(), ContractError> {
-    if !crate::access::has_role(env, admin, crate::types::Role::Admin)
-        && Storage::get_global_admin(env) != Some(admin.clone())
-    {
-        return Err(ContractError::NotContractAdmin);
+    if Storage::get_global_admin(env) != Some(admin.clone()) {
+        return Err(ContractError::Unauthorized);
     }
     validate_config(&new_config)?;
     Storage::set_protocol_config(env, &new_config);

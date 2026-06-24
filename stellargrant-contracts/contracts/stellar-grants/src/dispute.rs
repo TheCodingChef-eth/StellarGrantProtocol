@@ -48,10 +48,8 @@ pub fn assign_arbiter(
     if dispute.status != DisputeStatus::Open {
         return Err(ContractError::InvalidState);
     }
-    if !crate::access::has_role(env, admin, crate::types::Role::Admin)
-        && Storage::get_global_admin(env) != Some(admin.clone())
-    {
-        return Err(ContractError::NotContractAdmin);
+    if Storage::get_global_admin(env) != Some(admin.clone()) {
+        return Err(ContractError::Unauthorized);
     }
     if dispute.arbiters.contains(arbiter.clone()) {
         return Err(ContractError::AlreadyVoted);
@@ -126,68 +124,53 @@ pub fn resolve_dispute(
 
     if outcome == DisputeStatus::ResolvedForContributor {
         if let Some(milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
-            let payout_token = milestone.payout_token.clone();
-            let balance = grant.escrow_balances.get(payout_token.clone()).unwrap_or(0);
+            let balance = grant.escrow_balance;
             if balance >= milestone.amount {
-                token::Client::new(env, &payout_token).transfer(
+                token::Client::new(env, &grant.token).transfer(
                     &env.current_contract_address(),
                     &grant.owner,
                     &milestone.amount,
                 );
-                grant.escrow_balances.set(
-                    payout_token,
-                    balance
-                        .checked_sub(milestone.amount)
-                        .ok_or(ContractError::InsufficientBalance)?,
-                );
+                grant.escrow_balance = balance
+                    .checked_sub(milestone.amount)
+                    .ok_or(ContractError::InvalidInput)?;
             }
         }
-    } else {
-        if let Some(milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
-            let payout_token = milestone.payout_token.clone();
-            let balance = grant.escrow_balances.get(payout_token.clone()).unwrap_or(0);
-            if balance >= milestone.amount && !grant.funders.is_empty() {
-                let mut total_contributed: i128 = 0;
-                for fund in grant.funders.iter() {
-                    if fund.token == payout_token {
-                        total_contributed = total_contributed.saturating_add(fund.amount);
+    } else if let Some(milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
+        let balance = grant.escrow_balance;
+        if balance >= milestone.amount && !grant.funders.is_empty() {
+            let mut total_contributed: i128 = 0;
+            for fund in grant.funders.iter() {
+                total_contributed = total_contributed.saturating_add(fund.amount);
+            }
+            if total_contributed > 0 {
+                let tok_client = token::Client::new(env, &grant.token);
+                let mut distributed: i128 = 0;
+                let funders_len = grant.funders.len();
+                for i in 0..funders_len {
+                    let fund = grant.funders.get(i).ok_or(ContractError::InvalidInput)?;
+                    let is_last = i + 1 == funders_len;
+                    let share = if is_last {
+                        milestone.amount - distributed
+                    } else {
+                        fund.amount
+                            .checked_mul(milestone.amount)
+                            .ok_or(ContractError::InvalidInput)?
+                            .checked_div(total_contributed)
+                            .ok_or(ContractError::InvalidInput)?
+                    };
+                    if share > 0 {
+                        tok_client.transfer(
+                            &env.current_contract_address(),
+                            &fund.funder,
+                            &share,
+                        );
+                        distributed = distributed.saturating_add(share);
                     }
                 }
-                if total_contributed > 0 {
-                    let tok_client = token::Client::new(env, &payout_token);
-                    let mut distributed: i128 = 0;
-                    let funders_len = grant.funders.len();
-                    for i in 0..funders_len {
-                        let fund = grant.funders.get(i).ok_or(ContractError::InvalidInput)?;
-                        if fund.token != payout_token {
-                            continue;
-                        }
-                        let is_last = i + 1 == funders_len;
-                        let share = if is_last {
-                            milestone.amount - distributed
-                        } else {
-                            fund.amount
-                                .checked_mul(milestone.amount)
-                                .ok_or(ContractError::InvalidInput)?
-                                .checked_div(total_contributed)
-                                .ok_or(ContractError::InvalidInput)?
-                        };
-                        if share > 0 {
-                            tok_client.transfer(
-                                &env.current_contract_address(),
-                                &fund.funder,
-                                &share,
-                            );
-                            distributed = distributed.saturating_add(share);
-                        }
-                    }
-                    grant.escrow_balances.set(
-                        payout_token,
-                        balance
-                            .checked_sub(distributed)
-                            .ok_or(ContractError::InsufficientBalance)?,
-                    );
-                }
+                grant.escrow_balance = balance
+                    .checked_sub(distributed)
+                    .ok_or(ContractError::InvalidInput)?;
             }
         }
     }
@@ -209,10 +192,7 @@ pub fn cancel_dispute(
     if dispute.status != DisputeStatus::Open && dispute.status != DisputeStatus::UnderReview {
         return Err(ContractError::InvalidState);
     }
-    if dispute.raised_by != *caller
-        && !crate::access::has_role(env, caller, crate::types::Role::Admin)
-        && Storage::get_global_admin(env) != Some(caller.clone())
-    {
+    if dispute.raised_by != *caller && Storage::get_global_admin(env) != Some(caller.clone()) {
         return Err(ContractError::Unauthorized);
     }
     dispute.status = DisputeStatus::Cancelled;
@@ -225,30 +205,27 @@ pub fn cancel_dispute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Grant, GrantStatus};
+    use crate::types::{Grant, GrantFund, GrantStatus};
     use soroban_sdk::{testutils::Address as _, Env, String, Vec};
 
     fn make_grant(env: &Env, owner: Address) -> Grant {
-        let token = Address::generate(env);
-        Grant::new(
-            1,
-            owner.clone(),
-            String::from_str(env, "T"),
-            String::from_str(env, "D"),
-            token,
-            1000,
-            500,
-            Vec::new(env),
-            GrantStatus::Active,
-            1,
-            2,
-            env.ledger().timestamp(),
-            0,
-            0,
-            Vec::new(env),
-            false,
-            env,
-        )
+        Grant {
+            id: 1,
+            owner: owner.clone(),
+            title: String::from_str(env, "T"),
+            description: String::from_str(env, "D"),
+            token: Address::generate(env),
+            status: GrantStatus::Active,
+            total_amount: 1000,
+            milestone_amount: 500,
+            reviewers: Vec::new(env),
+            total_milestones: 2,
+            milestones_paid_out: 0,
+            escrow_balance: 0,
+            funders: Vec::new(env),
+            reason: None,
+            timestamp: env.ledger().timestamp(),
+        }
     }
 
     #[test]
@@ -270,7 +247,6 @@ mod tests {
         let owner = Address::generate(&env);
         let grant = make_grant(&env, owner.clone());
 
-        // 1 vote each — neither side has majority of 2 needed
         let mut dispute = Dispute {
             grant_id: 1,
             milestone_idx: 0,
@@ -296,7 +272,6 @@ mod tests {
         let owner = Address::generate(&env);
         let grant = make_grant(&env, owner.clone());
 
-        // Status is Open, not UnderReview
         let mut dispute = Dispute {
             grant_id: 1,
             milestone_idx: 0,

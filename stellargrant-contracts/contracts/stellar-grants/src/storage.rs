@@ -575,4 +575,46 @@ impl Storage {
             .set(&key, &current.saturating_add(amount));
         Self::bump_persistent_ttl(env, &key);
     }
+
+    // ── Emergency pause storage ───────────────────────────────────────────────
+
+    pub fn get_is_paused(env: &Env) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
+    }
+
+    pub fn set_is_paused(env: &Env, val: bool) {
+        env.storage().persistent().set(&DataKey::IsPaused, &val);
+    }
+
+    pub fn get_pause_history(env: &Env) -> soroban_sdk::Vec<PauseRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseHistory)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env))
+    }
+
+    pub fn append_pause_record(env: &Env, record: &PauseRecord) {
+        let mut history = Self::get_pause_history(env);
+        history.push_back(record.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::PauseHistory, &history);
+    }
+
+    pub fn set_latest_pause_unpaused_at(env: &Env, timestamp: u64) {
+        let mut history = Self::get_pause_history(env);
+        let len = history.len();
+        if len == 0 {
+            return;
+        }
+        let mut last = history.get(len - 1).unwrap();
+        last.unpaused_at = Some(timestamp);
+        history.set(len - 1, last);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PauseHistory, &history);
+    }
 }
