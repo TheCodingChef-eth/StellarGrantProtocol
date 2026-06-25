@@ -95,6 +95,13 @@ impl Storage {
         counter
     }
 
+    pub fn get_grant_count(env: &Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GrantCounter)
+            .unwrap_or(0)
+    }
+
     pub fn get_contributor(
         env: &Env,
         contributor: soroban_sdk::Address,
