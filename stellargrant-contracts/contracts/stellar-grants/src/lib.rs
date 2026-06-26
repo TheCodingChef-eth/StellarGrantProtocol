@@ -2,6 +2,7 @@
 #![allow(clippy::too_many_arguments)]
 mod access_control;
 mod analytics;
+mod arbitration_pool;
 mod audit;
 mod checklist;
 mod circuit_breaker;
@@ -34,12 +35,15 @@ mod license;
 pub mod merkle;
 mod metrics;
 mod migration;
+mod milestone_extension;
 mod multisig;
 mod oracle;
 mod pagination;
 mod params;
+mod performance_bond;
 mod quadratic;
 mod rate_limit;
+mod referral;
 mod reentrancy;
 mod registry;
 mod reputation;
@@ -77,6 +81,9 @@ pub use types::{
     RoleAssignment, RollingWindow, ScoreResult, ScoringDimension, ScoringRubric, ScoringWeight,
     SignatureStatus, SplitRecipient, StructuredEvidence, SwapResult, SwapRoute, SyndicateGrant,
     SyndicateMember, SyndicateStatus, TokenMetric, TransferProposal, TransferableRole, VoiceCredits, VotingMechanism,
+    // Issue #569/#572/#573/#574: growth, extension, arbitration, and bond modules
+    Arbiter, ArbiterVote, ArbitrationCase, BondClaim, BondStatus, ExtensionRequest,
+    ExtensionStatus, PerformanceBond, ReferralCode, ReferralRecord, ReferralReward,
 };
 
 use metrics::MetricField;
@@ -448,6 +455,9 @@ impl StellarGrantsContract {
         metrics::increment(env, MetricField::GrantsCompleted, 1);
         metrics::update_token_locked(env, &grant.token, -total_paid);
 
+        // Issue #574: return any active performance bond to the guarantor.
+        performance_bond::release_bond(env, grant_id)?;
+
         Events::emit_grant_completed(env, grant_id, total_paid, remaining_balance);
         Ok(())
     }
@@ -622,6 +632,9 @@ impl StellarGrantsContract {
             return Err(ContractError::Unauthorized);
         }
 
+        // Issue #574: a required bond must be posted before any milestone submission.
+        require_bond_posted(&env, grant_id)?;
+
         apply_milestone_submission(
             &env,
             grant_id,
@@ -660,6 +673,9 @@ impl StellarGrantsContract {
         if grant.owner != recipient {
             return Err(ContractError::Unauthorized);
         }
+
+        // Issue #574: a required bond must be posted before any milestone submission.
+        require_bond_posted(&env, grant_id)?;
 
         for sub in submissions.iter() {
             apply_milestone_submission(
@@ -2787,6 +2803,228 @@ impl StellarGrantsContract {
     ) -> Option<StructuredEvidence> {
         evidence_schema::get_evidence(&env, grant_id, milestone_idx)
     }
+
+    // ── Issue #569: Referral and Growth Incentive System ─────────────────────
+
+    /// Create a referral code. Any registered contributor or reviewer.
+    pub fn referral_create_code(
+        env: Env,
+        referrer: Address,
+        expires_at: Option<u64>,
+        max_uses: Option<u32>,
+    ) -> Result<Bytes, ContractError> {
+        referral::create_code(&env, &referrer, expires_at, max_uses)
+    }
+
+    /// Apply a referral code when a new contributor/funder joins.
+    pub fn referral_apply_code(
+        env: Env,
+        referred: Address,
+        code_hash: Bytes,
+    ) -> Result<(), ContractError> {
+        referral::apply_code(&env, &referred, &code_hash)
+    }
+
+    /// Referrer claims accumulated referral rewards for a token.
+    pub fn referral_claim_rewards(
+        env: Env,
+        referrer: Address,
+        token: Address,
+    ) -> Result<i128, ContractError> {
+        referral::claim_rewards(&env, &referrer, &token)
+    }
+
+    /// Return total unclaimed referral rewards for a referrer and token.
+    pub fn referral_pending_rewards(env: Env, referrer: Address, token: Address) -> i128 {
+        referral::pending_rewards(&env, &referrer, &token)
+    }
+
+    /// Return the referral record for a referred address.
+    pub fn referral_get_record(env: Env, referred: Address) -> Option<ReferralRecord> {
+        referral::get_record(&env, &referred)
+    }
+
+    /// Deactivate a referral code. Creator or admin only.
+    pub fn referral_deactivate_code(
+        env: Env,
+        caller: Address,
+        code_hash: Bytes,
+    ) -> Result<(), ContractError> {
+        referral::deactivate_code(&env, &caller, &code_hash)
+    }
+
+    // ── Issue #572: Deadline Extension Request Workflow ──────────────────────
+
+    /// Contributor requests a deadline extension for a milestone.
+    pub fn request_extension(
+        env: Env,
+        contributor: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        new_deadline: u64,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        milestone_extension::request_extension(
+            &env,
+            &contributor,
+            grant_id,
+            milestone_idx,
+            new_deadline,
+            reason,
+        )
+    }
+
+    /// Reviewer votes on a pending extension request.
+    pub fn vote_extension(
+        env: Env,
+        reviewer: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        approve: bool,
+    ) -> Result<ExtensionStatus, ContractError> {
+        milestone_extension::vote_extension(&env, &reviewer, grant_id, milestone_idx, approve)
+    }
+
+    /// Contributor withdraws a pending extension request.
+    pub fn withdraw_extension(
+        env: Env,
+        contributor: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Result<(), ContractError> {
+        milestone_extension::withdraw_request(&env, &contributor, grant_id, milestone_idx)
+    }
+
+    /// Return the current extension request for a milestone.
+    pub fn get_extension_request(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Option<ExtensionRequest> {
+        milestone_extension::get_request(&env, grant_id, milestone_idx)
+    }
+
+    /// Return all resolved extension requests for a grant.
+    pub fn get_extension_history(env: Env, grant_id: u64) -> Vec<ExtensionRequest> {
+        milestone_extension::get_extension_history(&env, grant_id)
+    }
+
+    // ── Issue #573: Community Arbitration Pool ───────────────────────────────
+
+    /// Join the arbitration pool by staking tokens.
+    pub fn arbiter_join_pool(
+        env: Env,
+        arbiter: Address,
+        token: Address,
+        stake: i128,
+    ) -> Result<(), ContractError> {
+        arbitration_pool::join_pool(&env, &arbiter, &token, stake)
+    }
+
+    /// Leave the arbitration pool and withdraw stake.
+    pub fn arbiter_leave_pool(env: Env, arbiter: Address) -> Result<i128, ContractError> {
+        arbitration_pool::leave_pool(&env, &arbiter)
+    }
+
+    /// Enable community arbitration for an open dispute by assigning a randomized
+    /// panel from the pool. Admin-gated. Returns the arbitration case id.
+    pub fn assign_arbitration_panel(
+        env: Env,
+        admin: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        dispute_id: u32,
+        panel_size: u32,
+    ) -> Result<u32, ContractError> {
+        admin.require_auth();
+        if Storage::get_global_admin(&env) != Some(admin.clone()) {
+            return Err(ContractError::Unauthorized);
+        }
+        let mut d = Storage::get_dispute(&env, grant_id, milestone_idx)
+            .ok_or(ContractError::InvalidState)?;
+        dispute::assign_pool_panel(&env, &mut d, dispute_id, panel_size)
+    }
+
+    /// Arbiter casts a vote on an arbitration case.
+    pub fn cast_arbiter_vote(
+        env: Env,
+        arbiter: Address,
+        case_id: u32,
+        favor_contributor: bool,
+        confidence: u32,
+    ) -> Result<(), ContractError> {
+        arbitration_pool::cast_arbiter_vote(&env, &arbiter, case_id, favor_contributor, confidence)
+    }
+
+    /// Finalize an arbitration case once voting closes.
+    pub fn finalize_arbitration_case(env: Env, case_id: u32) -> Result<bool, ContractError> {
+        arbitration_pool::finalize_case(&env, case_id)
+    }
+
+    /// Distribute rewards and slash minority arbiters for a finalized case.
+    pub fn settle_arbitration_rewards(env: Env, case_id: u32) -> Result<(), ContractError> {
+        arbitration_pool::settle_rewards(&env, case_id)
+    }
+
+    /// Return pool statistics: (active_arbiters, total_staked).
+    pub fn arbitration_pool_stats(env: Env) -> (u32, i128) {
+        arbitration_pool::pool_stats(&env)
+    }
+
+    /// Return an arbiter's profile.
+    pub fn get_arbiter(env: Env, address: Address) -> Option<Arbiter> {
+        arbitration_pool::get_arbiter(&env, &address)
+    }
+
+    // ── Issue #574: Surety Bonds for High-Value Grant Delivery ───────────────
+
+    /// Grant owner requires a performance bond for their grant.
+    pub fn require_bond(
+        env: Env,
+        owner: Address,
+        grant_id: u64,
+        token: Address,
+        amount: i128,
+        ttl_ledgers: u32,
+    ) -> Result<u32, ContractError> {
+        performance_bond::require_bond(&env, &owner, grant_id, &token, amount, ttl_ledgers)
+    }
+
+    /// Guarantor posts a required bond by depositing the bond amount.
+    pub fn post_bond(env: Env, guarantor: Address, bond_id: u32) -> Result<(), ContractError> {
+        performance_bond::post_bond(&env, &guarantor, bond_id)
+    }
+
+    /// Funder claims a bond payout after contributor default.
+    pub fn claim_bond(
+        env: Env,
+        funder: Address,
+        grant_id: u64,
+        reason: String,
+    ) -> Result<BondClaim, ContractError> {
+        performance_bond::claim_bond(&env, &funder, grant_id, reason)
+    }
+
+    /// Return the performance bond for a grant.
+    pub fn get_bond(env: Env, grant_id: u64) -> Option<PerformanceBond> {
+        performance_bond::get_bond(&env, grant_id)
+    }
+
+    /// Check if a grant has an active (posted) bond.
+    pub fn has_active_bond(env: Env, grant_id: u64) -> bool {
+        performance_bond::has_active_bond(&env, grant_id)
+    }
+}
+
+/// Issue #574: if a grant requires a performance bond, block milestone work until
+/// the guarantor has posted it. No-op for grants without a bond requirement.
+fn require_bond_posted(env: &Env, grant_id: u64) -> Result<(), ContractError> {
+    if let Some(bond) = performance_bond::get_bond(env, grant_id) {
+        if bond.status == BondStatus::Pending {
+            return Err(ContractError::BondNotPosted);
+        }
+    }
+    Ok(())
 }
 
 fn apply_milestone_submission(
@@ -2824,6 +3062,7 @@ fn apply_milestone_submission(
         status_updated_at: 0,
         proof_url: Some(proof_url),
         submission_timestamp: env.ledger().timestamp(),
+        deadline: None,
     };
 
     Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
