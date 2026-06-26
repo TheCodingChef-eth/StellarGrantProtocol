@@ -48,6 +48,12 @@ pub fn deduct_and_transfer(
         treasury.clone(),
     );
 
+    // Issue #569: if the grant owner was referred, accrue a share of this fee to
+    // their referrer's pending rewards. No-op when no referral record exists.
+    if let Some(grant) = Storage::get_grant(env, grant_id) {
+        crate::referral::trigger_reward(env, &grant.owner, token, fee)?;
+    }
+
     gross.checked_sub(fee).ok_or(ContractError::InvalidInput)
 }
 
