@@ -3,8 +3,9 @@ use crate::types::{
     ContractError, ContractVersion, ContributorProfile, CrowdfundCampaign, CrowdfundPledge, DexConfig, Dispute, EscrowAccount,
     EscrowState, EvidenceSchema, FunderLedger, Grant, GrantCategory, GrantTag, HookEvent, HookRegistration,
     InsuranceClaim, InsurancePolicy, Invoice, LicenseRecord, MerkleCommitment, MigrationRecord, Milestone,
-    MultisigProposal, OracleConfig, ParamRecord, PauseRecord, PaymentSplit, PaymentStream, ProtocolConfig, ProtocolMetrics,
-    ProtocolModule, QuadraticVoteRecord, RateLimitAction, RateLimitRecord, RegistryEntry, RelayAllowance, RelayConfig, RenewalProposal,
+    MilestoneDag, MilestoneNft, MultisigProposal, OracleConfig, ParamRecord, PauseRecord, PaymentSplit, PaymentStream,
+    ProtocolConfig, ProtocolMetrics, ProtocolModule, PublicReview, QuadraticVoteRecord,
+    RateLimitAction, RateLimitRecord, RegistryEntry, RelayAllowance, RelayConfig, RenewalProposal,
     ReviewerProfile, ReviewerRequest, Role, RoleAssignment, RollingWindow, ScoringRubric, StructuredEvidence, TokenMetric,
     TransferProposal, VoiceCredits, VotingMechanism,
 };
@@ -129,6 +130,18 @@ pub enum DataKey {
     // Issue #583: Typed Evidence Schemas
     EvidenceSchema(u64, u32),
     StructuredEvidence(u64, u32),
+    // Issue #590: public review
+    PublicReviews(u64, u32),
+    PublicReviewerRecord(Address, u64, u32),
+    // Issue #595: milestone DAG
+    MilestoneDag(u64),
+    // Issue #570: milestone NFT
+    MilestoneNft(u64, u32),
+    NftsByAddress(Address),
+    NftCounter,
+    NftTokenIndex(u32),
+    // Issue #565: contributor portfolio grant index
+    ContributorGrantIds(Address),
 }
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
@@ -1300,5 +1313,147 @@ impl Storage {
         let key = DataKey::StructuredEvidence(grant_id, milestone_idx);
         env.storage().persistent().set(&key, evidence);
         Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #590: Public Review ─────────────────────────────────────────────
+
+    pub fn get_public_reviews(env: &Env, grant_id: u64, milestone_idx: u32) -> Vec<PublicReview> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PublicReviews(grant_id, milestone_idx))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn set_public_reviews(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        reviews: &Vec<PublicReview>,
+    ) {
+        let key = DataKey::PublicReviews(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, reviews);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_public_reviewer_record(
+        env: &Env,
+        reviewer: &Address,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Option<PublicReview> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PublicReviewerRecord(
+                reviewer.clone(),
+                grant_id,
+                milestone_idx,
+            ))
+    }
+
+    pub fn set_public_reviewer_record(
+        env: &Env,
+        reviewer: &Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        review: &PublicReview,
+    ) {
+        let key = DataKey::PublicReviewerRecord(reviewer.clone(), grant_id, milestone_idx);
+        env.storage().persistent().set(&key, review);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #595: Milestone DAG ─────────────────────────────────────────────
+
+    pub fn get_milestone_dag(env: &Env, grant_id: u64) -> Option<MilestoneDag> {
+        let key = DataKey::MilestoneDag(grant_id);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_milestone_dag(env: &Env, grant_id: u64, dag: &MilestoneDag) {
+        let key = DataKey::MilestoneDag(grant_id);
+        env.storage().persistent().set(&key, dag);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #570: Milestone NFT ─────────────────────────────────────────────
+
+    pub fn next_nft_id(env: &Env) -> u32 {
+        let mut id: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NftCounter)
+            .unwrap_or(0);
+        id += 1;
+        env.storage().persistent().set(&DataKey::NftCounter, &id);
+        id
+    }
+
+    pub fn get_milestone_nft(env: &Env, grant_id: u64, milestone_idx: u32) -> Option<MilestoneNft> {
+        let key = DataKey::MilestoneNft(grant_id, milestone_idx);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_milestone_nft(env: &Env, nft: &MilestoneNft) {
+        let key = DataKey::MilestoneNft(nft.grant_id, nft.milestone_idx);
+        env.storage().persistent().set(&key, nft);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_nft_by_token_id(env: &Env, token_id: u32) -> Option<MilestoneNft> {
+        let index: Option<(u64, u32)> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NftTokenIndex(token_id));
+        index.and_then(|(grant_id, milestone_idx)| Self::get_milestone_nft(env, grant_id, milestone_idx))
+    }
+
+    pub fn set_nft_token_index(env: &Env, token_id: u32, grant_id: u64, milestone_idx: u32) {
+        let key = DataKey::NftTokenIndex(token_id);
+        env.storage().persistent().set(&key, &(grant_id, milestone_idx));
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_nfts_by_owner(env: &Env, owner: &Address) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::NftsByAddress(owner.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn set_nfts_by_owner(env: &Env, owner: &Address, token_ids: &Vec<u32>) {
+        let key = DataKey::NftsByAddress(owner.clone());
+        env.storage().persistent().set(&key, token_ids);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #565: Contributor Portfolio Grant Index ────────────────────────
+
+    pub fn get_contributor_grant_ids(env: &Env, contributor: &Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContributorGrantIds(contributor.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn push_contributor_grant_id(env: &Env, contributor: &Address, grant_id: u64) {
+        let key = DataKey::ContributorGrantIds(contributor.clone());
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        if !ids.contains(grant_id) {
+            ids.push_back(grant_id);
+            env.storage().persistent().set(&key, &ids);
+            Self::bump_persistent_ttl(env, &key);
+        }
     }
 }
